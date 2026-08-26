@@ -1,0 +1,3 @@
+name: 音乐模式
+description: 音乐搜索、乐理教学与练习的垂类 Agent。不含 Shell、文件系统、子代理与工作流能力。
+order: 0

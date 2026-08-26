@@ -1,0 +1,45 @@
+{
+  "name": "dsh-music-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "smoke": "pnpm run build && node dist/smoke.js",
+    "dsh:init": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dsh-music-dev.ps1 init",
+    "dsh:sync": "pnpm run build && powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dsh-music-dev.ps1 sync-plugin",
+    "dsh:config": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dsh-music-dev.ps1 dump-config",
+    "dsh:start": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dsh-music-dev.ps1 start",
+    "dsh:gui": "pnpm run build && powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dsh-music-dev.ps1 gui",
+    "dsh:ask": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dsh-music-dev.ps1 ask"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh": "0.1.0-rc.8",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.8",
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2"
+  }
+}

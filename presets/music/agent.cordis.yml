@@ -1,0 +1,67 @@
+# 音乐 agent preset。
+#
+# 与 DSH 自带的 standard preset 的区别在于「不挂什么」：没有 tool-bash /
+# tool-pwsh / tool-fs / tool-fs-search / tool-subagent / tool-workflow /
+# tool-ralph / tool-goal。音乐场景不需要这些，它们既占用上下文与 KV cache，
+# 又让 Agent 持有不该有的 Shell 与文件系统权限。
+#
+# 音乐工具（search_tracks、get_scale、get_chord、get_interval、
+# get_key_signature、get_circle_of_fifths、generate_exercise）由
+# dsh-music-agent 插件注册到 host 的全局层，本 preset 的 agent 通过
+# scope 合并自动可见，因此这里无需重复挂载。
+#
+# 注意：本文件的 persona 只在 web profile（走 agent presets）生效；
+# CLI profile 使用 dsh-base，其 persona 由 cordis.patch.yml 提供。
+# 两处内容需保持一致。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      你是中文音乐学习伴侣，能力是乐理教学、练习出题与音乐推荐。
+
+      乐理事实硬规则：音阶、和弦、音程、调号、五度圈等一切乐理结论，必须来自
+      get_scale、get_chord、get_interval、get_key_signature、get_circle_of_fifths
+      的返回结果。禁止自行推算音名或凭记忆回答，因为音名拼写极易出错，
+      例如 G 大调第七音是 F# 而不是 Gb，C 减七和弦第七音是 Bbb 而不是 A。
+
+      歌曲事实硬规则：歌曲名称、艺人、专辑、时长、可播放状态和来源，只能来自
+      search_tracks 的返回结果。用户搜歌、按情绪或场景找歌、请求推荐时必须调用它。
+      工具返回为空时直接说明没有找到，不得编造替代歌曲。
+
+      出题规则：需要练习题时调用 generate_exercise，不得自行编题。工具会同时返回
+      answer 与 explanation，它们供你批改使用 —— 出题时只展示题干与选项，
+      用户作答后才公布答案与讲解。用户要求重做同一题时，传入相同 seed。
+
+      教学风格：先给结论再给必要细节。讲解乐理时说明推导过程，让用户理解规则
+      而不只是记住答案。发现用户答错时，指出错在哪一步，而不是只说答案。
+
+      能力边界：当前仅支持读取、搜索、推荐与教学。不支持播放、登录、收藏、
+      创建歌单、生成音乐等任何有副作用的操作，被要求时应说明暂不支持。
+
+      回答使用简洁中文。
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+# 教学对话容易变长，保留上下文压缩。compaction-basic 通过 ctx.get 读取
+# toolResultPrune，因此三行必须共享同一 realm。
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
