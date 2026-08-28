@@ -37,8 +37,13 @@ src/
 ├─ gateway/           曲库接入（可替换）
 │  ├─ music-gateway.ts
 │  └─ mock-music-gateway.ts
+├─ memory/            记忆层：见第 7 节
+│  ├─ types.ts        profile 与 episode 的数据形状
+│  ├─ paths.ts        落盘位置（$DSH_HOME/music-memory/）
+│  ├─ store.ts        读写（唯一有 I/O）
+│  ├─ derive.ts       从 episodes 派生（纯函数）
+│  └─ render.ts       渲染为提示词文本（纯函数）
 ├─ tools/             DSH 工具封装：把下层能力暴露给模型
-├─ memory/            用户画像与学习记录（阶段 2）
 ├─ dsh-plugin.ts      插件注册
 └─ smoke.ts           确定性检查
 ```
@@ -51,6 +56,9 @@ src/
 
 **`audio/` 中只有 `player.ts` 允许有 I/O。** 合成与编码是纯函数，因此波形属性（频率、
 包络、削波、WAV 头）可以自动验证；只有"声音好不好听"必须人耳判断。
+
+**`memory/` 中只有 `store.ts` 允许有 I/O。** 派生与渲染是纯函数，因此「同样的
+episodes 必然得到同样的画像」可以自动验证。
 
 **`tools/` 是唯一知道 DSH 存在的地方（除 `dsh-plugin.ts`）。**
 
@@ -196,24 +204,119 @@ interface Interval {
 
 **方案**：在 `$DSH_HOME/.agent-presets/` 下建立音乐专用 preset，只挂音乐工具与必要通用工具（如 `ask_user`），并在 `cordis.patch.yml` 中把 `agent-presets` 的默认值指向它。
 
-## 7. 记忆结构（阶段 2 预留）
+## 7. 记忆层
 
-设计原则：记忆是结构化数据，不是对话摘要。
+### 7.1 DSH 提供什么、缺什么
 
-首批字段按重要性排序 —— 前三项决定所有教学输出的形态：
+调查结论：**DSH 给了记忆的全部机制，缺的只有策略。**
+
+| 层 | DSH | 说明 |
+|---|---|---|
+| 注入通道 | ✅ `ctx.systemPrompt` | `section()` 静态段、`variable(name, provider)` 每步求值、`context()` 动态上下文 |
+| 存储 | ✅ `storage-json` / 直接写文件 | 前者只在 web profile 有 |
+| 工作记忆管理 | ✅ `compaction` / `token-meter` / `projection` | 长对话不爆上下文 |
+| 历史检索 | ✅ `session-query-sqlite` | 默认 `openAt: never`，opt-in |
+| 静态项目指令 | ⚠️ `agent-instructions` | 见 7.2，两个 profile 都不可用 |
+| **记什么、何时记、冲突听谁** | ❌ | 本节要建的东西 |
+
+这与 Claude Code 的情形一致 —— 框架提供机制，产品层的「自动积累用户画像」需要自己实现。
+
+### 7.2 为什么不用 AGENTS.md
+
+`dsh-agent-instructions` 加载 `AGENTS.md` 链并注入持久 user 消息，形态上最接近「跨会话记忆」，但实测不可用：
+
+| 位置 | 结果 |
+|---|---|
+| web profile 的该行 | `disabled: true`（被 `dsh-web-app` 禁用，改由 preset 挂载） |
+| `$DSH_HOME/AGENTS.md`（CLI） | 未加载 |
+| `<项目根>/AGENTS.md`（CLI） | 未加载 |
+
+最可能的原因是该插件不静态注入 `fs`，无 `ctx.fs` 提供方时不执行任何操作，而 CLI profile 只有 `fs-sandbox` 与 `fs-observation-policy`，没有 `dsh-fs-local`。
+
+即便可用，它也只适合**人写的静态规则**，不适合 agent 自动积累的动态记忆。
+
+### 7.3 采用的注入方式（已验证）
+
+```
+section()   注册含 {{music_memory}} 的段，order 50（persona 0 与工具引导 100 之间）
+variable()  提供动态值，每次组装重新求值
+```
+
+选 `section() + variable()` 而非 `context()` 的理由：`context()` 会「成为模型历史中带来源的 runtime-context 快照」，进入历史即可能被 compaction 压缩；而段属于系统提示词。
+
+实测结论：
+
+| 验证项 | 结果 |
+|---|---|
+| 注入生效 | 模型读到注入内容并据此回答 |
+| 每步动态求值 | 只改文件、不重启进程，下一轮即读到新值 |
+
+### 7.4 三层结构
+
+对照 CoALA 框架（Princeton, 2023）的记忆分类：
+
+| 层 | CoALA 对应 | 存储形态 | 可变性 |
+|---|---|---|---|
+| `profile` | semantic | 单个 JSON | 可覆盖，覆盖时向 episodes 留痕 |
+| `episodes` | episodic | JSONL 追加 | **append-only，永不修改** |
+| `derived` | 由 episodes 计算 | 不落盘 | 纯函数派生 |
+
+**关键设计：派生记忆不独立存储。** `masteredConcepts`、`weakPoints`、`tastePreferences` 全部由 `episodes` 纯函数算出，而非各存一份可变状态。
+
+这消除了冲突消解的大部分需求（没有独立可变状态可冲突），并保证记忆永远与事实一致 —— 不会出现「记录说已掌握，但错题里全是它」这种矛盾。
+
+append-only 借鉴 Mem0 新算法的单遍 ADD-only 抽取：事实存入后不被覆盖或删除，保留完整历史。
+
+### 7.5 遗忘用加权，不用删除
+
+episodes 全部保留（单用户本地文件，量很小），但派生计算时按时间指数衰减。
+
+这样三个月前答错一次不会永久压低水平判定，而历史仍完整可查。
+
+### 7.6 写入时机
+
+| 类型 | 时机 | 谁写 |
+|---|---|---|
+| `profile` | hot path | 模型显式调用工具（用户明确陈述的事实） |
+| `episodes`（概念接触、播放） | 自动 | 工具执行时确定性写入 |
+| `episodes`（练习结果） | hot path | 模型批改后显式调用 |
+| `derived` | 读时计算 | 无需写入 |
+
+**垂类的优势：** 播放与乐理查询都经过我们自己的工具，因此这部分 episodes 可以自动、确定性地记录，**不需要 LLM 抽取**。通用记忆方案必须用 LLM 从自然语言里猜「刚才发生了什么值得记」，我们直接知道。这既省 token 又准确，且可测。
+
+练习结果是例外：题目由工具生成，但判分发生在模型侧，因此需要模型显式回写。
+
+### 7.7 为什么不引入 mem0 / Zep / Letta
+
+| 理由 | 说明 |
+|---|---|
+| 领域已知 | 通用方案靠向量检索 + LLM 抽取，是因为不知道领域；我们的字段是明确的，结构化查询更精确 |
+| 规模不符 | 那些方案面向数百万次交互，我们是单用户本地应用；向量库与 embedding 服务是纯负担 |
+| 可验证性 | 本项目纪律是纯函数 + smoke 可测；LLM 抽取不确定，写不出确定性检查 |
+| 成本 | 抽取与冲突消解都需额外 LLM 调用 |
+| 实测数据存疑 | Mem0 官网自报 LoCoMo 92.5%，独立复现同基准测得 29.3% |
+
+三项指标上的取舍：额外 LLM 调用为零、延迟为本地文件加纯函数、领域内准确率更高；**代价是不支持领域外的模糊语义查询**。若将来需要「找我上次说喜欢的那种歌」这类检索，可在 episodes 之上叠加向量索引，本结构不排斥。
+
+### 7.8 profile 字段
 
 | 字段 | 来源 | 用途 |
 |---|---|---|
-| `instrument` | 用户声明 | 决定谱号、讲解视角 |
-| `level` | 测评 + 练习结果推算，非用户自填 | 决定内容深度，跳过已掌握内容 |
-| `goal` | 用户声明 | 决定教什么、不教什么 |
-| `masteredConcepts` | 练习通过记录 | 避免重复教学 |
-| `weakPoints` | 错题聚合 | 针对性出题 |
-| `tastePreferences` | 采纳/跳过反馈 | 推荐对齐 |
+| `instruments` | 用户声明 | **数组** —— 同时学声乐与钢琴，讲解需按语境切换视角 |
+| `vocalRange` | 音域测试 | 声乐专有；练习音超出音域即无意义 |
+| `solfegeSystem` | 用户偏好 | 默认 `fixed-do`，可切 `movable-do` |
+| `level` | 测评与练习结果推算，非自填 | 决定内容深度 |
+| `goals` | 用户声明 | 决定教什么、不教什么 |
 
-参照 Playtime 的两条做法：入门测评定位起点，表现好自动升级；所有内容按用户实际演奏的乐器调整（中提琴中音谱号、长号低音与次中音谱号、钢琴双谱表）。
+参照 Playtime 的两条做法：入门测评定位起点、表现好自动升级；内容按实际乐器调整（钢琴双谱表、声乐需音域与移调）。
 
-存储走 DSH `storage-json`（落在 `$DSH_HOME/storages`）。
+### 7.9 实现约束（易埋雷）
+
+**变量 provider 必须永远返回字符串。** `renderPrompt` 对「已注册但无值」的引用会抛异常，而这会让整轮对话在组装提示词阶段就失败。记忆为空、文件损坏、权限不足 —— 任何情况都必须返回占位文本而非 `undefined`。
+
+**JSONL 读取必须容忍损坏行。** 跳过无法解析的行，不可让单行损坏导致整个记忆不可读。
+
+**记忆落在 `$DSH_HOME/music-memory/`。** 属用户私有数据，`.dsh-music-dev/` 已被 `.gitignore` 排除，不进版本控制。
 
 ## 8. 待决事项
 
@@ -270,6 +373,7 @@ interface Interval {
 | 乐理引擎 | `src/theory/` | smoke 80+ 项，覆盖第 9 节全部易错场景 |
 | 六个乐理工具 | `src/tools/music-theory.ts` | 类型检查 + smoke |
 | 音频合成与播放 | `src/audio/`、`src/tools/audio.ts` | smoke 验证波形属性与 WAV 头；实际发声已确认 |
+| 记忆层 | `src/memory/`、`src/tools/memory.ts` | smoke 验证派生纯度与时间衰减；跨对话生效已实测 |
 | 工具注册 | `src/dsh-plugin.ts` | 编译通过 |
 | 音乐 agent preset | `presets/music/` | 已同步到 `$DSH_HOME/.agent-presets/music/` |
 | preset 默认值 | `cordis.patch.yml` | `dump-config` 确认 web profile 为 `default: music` |
@@ -322,6 +426,23 @@ profile 存在，同一份 `cordis.patch.yml` 打到 CLI profile 时安全跳过
 | 曲库检索 | 推荐适合通勤的轻松音乐 | 调用 `search_tracks`，返回命中项并说明只找到一首 |
 | 不编造歌曲 | 帮我找周杰伦的歌 | 明确说未找到，未编造，并提出换关键词 |
 | 主动播放 | 听听 C 减七和弦，再放 C 大三和弦对比 | 调用 `play_notes` 播放两个和弦，并给出听觉特征对比讲解 |
+| 记忆写入 | 我学声乐和钢琴，入门，固定调，目标是听出和弦 | 调用 `remember_profile` 落盘，并记录三条 `profile-change` 留痕 |
+| **记忆跨对话生效** | 新对话零提示问「你对我了解多少」 | 答出乐器、水平、唱名、目标，并主动列出音域未测、无练习记录 |
+
+### smoke 抓到的设计缺陷
+
+记忆层的阈值判定最初把「练了几次」也施加了时间衰减，导致两次尝试的加权和约为 1.98，
+永远达不到 `>= 2` 的门槛 —— **掌握度判定永不生效**。代码不报错、功能表面正常，
+只是它永远不认为用户学会了任何东西。
+
+修法是把两件事分开：
+
+| 判断 | 依据 |
+|---|---|
+| 样本是否足够下结论 | 原始次数，与年代无关 |
+| 正确率是多少 | 时间加权，近期表现主导 |
+
+这类缺陷是 smoke 存在的主要理由：它不属于类型错误，也不会在运行时抛异常。
 
 ### 未验证
 

@@ -13,6 +13,9 @@ import {
   renderTone,
 } from './audio/synth.js'
 import { encodeWav, readWavHeader } from './audio/wav.js'
+import { deriveMemory } from './memory/derive.js'
+import { renderMemory } from './memory/render.js'
+import { EMPTY_PROFILE, type Episode, type MusicProfile } from './memory/types.js'
 import { buildChord } from './theory/chord.js'
 import {
   type Difficulty,
@@ -247,6 +250,116 @@ check('WAV 样本数', String(header.sampleCount), String(tone.length))
 check('WAV 字节数', String(wav.length), String(44 + tone.length * 2))
 check('WAV RIFF 标识', String.fromCharCode(...wav.slice(0, 4)), 'RIFF')
 check('WAV WAVE 标识', String.fromCharCode(...wav.slice(8, 12)), 'WAVE')
+
+// ── 记忆派生 ────────────────────────────────────────────────────
+// 派生量不独立存储，因此「同样的 episodes 必然得到同样的画像」是必须保证的
+// 契约。这里也验证时间衰减：旧错误不该永久压低判定。
+
+const NOW = Date.parse('2026-08-26T00:00:00.000Z')
+
+function daysAgo(days: number): string {
+  return new Date(NOW - days * 86_400_000).toISOString()
+}
+
+function attempt(concept: string, correct: boolean, days: number, difficulty = 2): Episode {
+  return {
+    kind: 'exercise-attempt',
+    at: daysAgo(days),
+    exerciseType: 'chord-identify',
+    concept,
+    difficulty,
+    correct,
+  }
+}
+
+const emptyDerived = deriveMemory([], NOW)
+check('空记忆无掌握项', String(emptyDerived.masteredConcepts.length), '0')
+check('空记忆无薄弱项', String(emptyDerived.weakPoints.length), '0')
+check('空记忆无水平推算', String(emptyDerived.levelEstimate === undefined), 'true')
+check('空记忆渲染非空', String(renderMemory(EMPTY_PROFILE, emptyDerived).length > 0), 'true')
+
+// 全对且样本充足 → 掌握
+const masteredDerived = deriveMemory([
+  attempt('大三和弦', true, 1), attempt('大三和弦', true, 2), attempt('大三和弦', true, 3),
+], NOW)
+check(
+  '连续答对判为掌握',
+  masteredDerived.masteredConcepts.map(s => s.concept).join(','),
+  '大三和弦',
+)
+check('掌握项不出现在薄弱项', String(masteredDerived.weakPoints.length), '0')
+
+// 多错少对 → 薄弱
+const weakDerived = deriveMemory([
+  attempt('减七和弦', false, 1), attempt('减七和弦', false, 2), attempt('减七和弦', true, 3),
+], NOW)
+check('多错判为薄弱', weakDerived.weakPoints.map(s => s.concept).join(','), '减七和弦')
+
+// 样本不足不下结论，避免一次侥幸就算掌握
+const thinDerived = deriveMemory([attempt('增三和弦', true, 1)], NOW)
+check('样本不足不判掌握', String(thinDerived.masteredConcepts.length), '0')
+check(
+  '样本不足归入练习中',
+  thinDerived.practicingConcepts.map(s => s.concept).join(','),
+  '增三和弦',
+)
+
+// 时间衰减：同样的错误分布，久远的那组权重更低，因此更容易被新证据翻转。
+const recentWrong = deriveMemory([attempt('音程', false, 0), attempt('音程', false, 1)], NOW)
+const oldWrong = deriveMemory([attempt('音程', false, 180), attempt('音程', false, 181)], NOW)
+const recentWeight = recentWrong.weakPoints[0]?.weightedAttempts ?? 0
+const oldWeight = oldWrong.weakPoints[0]?.weightedAttempts ?? 0
+check('近期加权高于久远', String(recentWeight > oldWeight), 'true')
+check('久远记录仍保留原始次数', String(oldWrong.weakPoints[0]?.rawAttempts ?? 0), '2')
+
+// 派生必须是纯函数：同样输入同样输出
+const episodesForPurity: Episode[] = [
+  attempt('纯四度', true, 1), attempt('纯四度', false, 2),
+  { kind: 'concept-touched', at: daysAgo(1), tool: 'get_scale', concept: '音阶:自然大调' },
+  { kind: 'track-feedback', at: daysAgo(1), trackId: 'mock-001', trackName: '晨光漫步', verdict: 'accepted' },
+  { kind: 'track-feedback', at: daysAgo(2), trackId: 'mock-004', trackName: '雨巷来信', verdict: 'skipped' },
+]
+check(
+  '派生为纯函数',
+  JSON.stringify(deriveMemory(episodesForPurity, NOW)),
+  JSON.stringify(deriveMemory(episodesForPurity, NOW)),
+)
+
+const feedbackDerived = deriveMemory(episodesForPurity, NOW)
+check('采纳曲目', feedbackDerived.acceptedTracks.join(','), '晨光漫步')
+check('跳过曲目', feedbackDerived.skippedTracks.join(','), '雨巷来信')
+check('接触概念含音阶', String(feedbackDerived.touchedConcepts.includes('音阶:自然大调')), 'true')
+
+// 渲染必须始终返回字符串：provider 返回 undefined 会让整轮对话在组装提示词时失败。
+const fullProfile: MusicProfile = {
+  instruments: ['voice', 'piano'],
+  solfegeSystem: 'fixed-do',
+  level: 'elementary',
+  goals: ['能听出喜欢的歌用了什么和弦'],
+  vocalRange: {
+    lowest: 'A2', highest: 'F5',
+    comfortableLow: 'C3', comfortableHigh: 'D5',
+    measuredAt: '2026-08-20T00:00:00.000Z',
+  },
+  updatedAt: '2026-08-20T00:00:00.000Z',
+}
+const rendered = renderMemory(fullProfile, feedbackDerived)
+check('渲染含乐器', String(rendered.includes('声乐') && rendered.includes('钢琴')), 'true')
+check('渲染含音域', String(rendered.includes('A2') && rendered.includes('F5')), 'true')
+check('渲染含唱名体系', String(rendered.includes('固定调唱名')), 'true')
+check('渲染含目标', String(rendered.includes('和弦')), 'true')
+check('渲染为字符串', typeof rendered, 'string')
+
+// 未测音域且学声乐时，应主动提示去测
+const voiceOnly: MusicProfile = {
+  instruments: ['voice'], solfegeSystem: 'fixed-do', goals: [],
+  updatedAt: '2026-08-20T00:00:00.000Z',
+}
+check(
+  '未测音域时提示测试',
+  String(renderMemory(voiceOnly, emptyDerived).includes('音域测试')),
+  'true',
+)
 
 // ── 曲库（Mock）────────────────────────────────────────────────
 const searchTracks = createSearchTracksTool(new MockMusicGateway())
