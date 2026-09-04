@@ -23,6 +23,7 @@ $profileCli = Join-Path $dshHome 'profiles\node_modules\@deepseek-ai\dsh\lib\bin
 $projectCli = Join-Path $projectRoot 'node_modules\@deepseek-ai\dsh\lib\bin.js'
 $guiBundle = '@deepseek-ai/dsh-web-app'
 $cliBundle = '@deepseek-ai/dsh-headless'
+$musicPreset = 'music'
 $env:DSH_HOME = $dshHome
 
 function Invoke-IsolatedDsh([string]$ProfileName, [string[]]$Arguments) {
@@ -136,6 +137,36 @@ function Sync-AgentPreset {
   [Console]::Error.WriteLine("[DSH-Music-Agent-Dev] synced agent presets: $names")
 }
 
+# The music preset must also be written into the USER settings layer, not only
+# into cordis.patch.yml. dsh-agent-presets treats `config.default` as an assembly
+# base that the user settings document overrides — so once the GUI's preset
+# picker writes a value, the patched default is permanently shadowed.
+#
+# Only the agent-presets key is touched; every other setting is preserved.
+function Set-DefaultPreset {
+  $settings = Join-Path $dshHome 'settings.yaml'
+  $lines = if (Test-Path -LiteralPath $settings) {
+    @([System.IO.File]::ReadAllLines($settings))
+  } else { @() }
+
+  # Drop any existing agent-presets block (the key plus its indented body).
+  $kept = @()
+  $skipping = $false
+  foreach ($line in $lines) {
+    if ($line -match '^agent-presets:') { $skipping = $true; continue }
+    if ($skipping) {
+      if ($line -match '^\s' -or $line.Trim() -eq '') { continue }
+      $skipping = $false
+    }
+    $kept += $line
+  }
+
+  $rebuilt = @($kept | Where-Object { $_.Trim() -ne '' }) + @('agent-presets:', "  default: $musicPreset")
+  $text = ($rebuilt -join "`n") + "`n"
+  [System.IO.File]::WriteAllText($settings, $text, (New-Object System.Text.UTF8Encoding($false)))
+  [Console]::Error.WriteLine("[DSH-Music-Agent-Dev] user setting agent-presets.default=$musicPreset")
+}
+
 $linkSpec = 'link:' + $projectRoot.Replace('\', '/')
 function Sync-Plugin {
   Invoke-IsolatedDsh $webProfile @('plugin', '--profile', $webProfile, 'add', $linkSpec)
@@ -148,18 +179,21 @@ switch ($Action) {
     Invoke-IsolatedDsh $cliProfile @('plugin', '--profile', $cliProfile, 'list', '--depth=0')
     Set-SurfaceBundles | Out-Null
     Sync-AgentPreset
+    Set-DefaultPreset
     Sync-Plugin
   }
   'sync-plugin' {
     # A bundle change only takes effect after the profile is installed again.
     Set-SurfaceBundles | Out-Null
     Sync-AgentPreset
+    Set-DefaultPreset
     Sync-Plugin
   }
   'dump-config' { Invoke-IsolatedDsh $webProfile @('--profile', $webProfile, '--dump-config') }
   'start' { Invoke-IsolatedDsh $webProfile (@('--profile', $webProfile) + $DshArgs) }
   'gui' {
     Sync-AgentPreset
+    Set-DefaultPreset
     if (Set-SurfaceBundles) { Sync-Plugin }
     $arguments = @('--profile', $webProfile, '--port', "$Port")
     # --no-open suppresses DSH's own browser launch so the desktop window is the
