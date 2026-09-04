@@ -25,7 +25,7 @@ import {
 } from './theory/exercise.js'
 import { getCircleOfFifths, getKeySignature } from './theory/key.js'
 import { formatInterval, intervalBetween } from './theory/interval.js'
-import { formatNote, parseNote } from './theory/note.js'
+import { formatNote, parseNote, transposeBySemitones } from './theory/note.js'
 import { buildScale, formatScale } from './theory/scale.js'
 import { resolveChordQuality, resolveScaleMode } from './theory/vocabulary.js'
 import { MockMusicGateway } from './gateway/mock-music-gateway.js'
@@ -250,6 +250,27 @@ check('WAV 样本数', String(header.sampleCount), String(tone.length))
 check('WAV 字节数', String(wav.length), String(44 + tone.length * 2))
 check('WAV RIFF 标识', String.fromCharCode(...wav.slice(0, 4)), 'RIFF')
 check('WAV WAVE 标识', String.fromCharCode(...wav.slice(8, 12)), 'WAVE')
+
+// ── 半音移调 ────────────────────────────────────────────────────
+// 音域测试逐半音步进，跨八度边界最易算错，因此这里重点覆盖边界。
+
+const up = (note: string, semitones: number): string =>
+  formatNote(transposeBySemitones(parseNote(note), semitones, 'sharp'))
+const upFlat = (note: string, semitones: number): string =>
+  formatNote(transposeBySemitones(parseNote(note), semitones, 'flat'))
+
+check('C4 上行半音', up('C4', 1), 'C#4')
+check('C4 上行半音（降号偏好）', upFlat('C4', 1), 'Db4')
+// 跨八度边界：B4 上行必须进入第 5 八度。
+check('B4 上行半音', up('B4', 1), 'C5')
+check('C4 下行半音', up('C4', -1), 'B3')
+check('C4 上行八度', up('C4', 12), 'C5')
+check('C4 下行八度', up('C4', -12), 'C3')
+check('A3 上行三半音', up('A3', 3), 'C4')
+check('F5 下行五半音', up('F5', -5), 'C5')
+// 等音输入应得到同一音高，拼写按偏好归一。
+check('F#4 与 Gb4 移调后同高', up('F#4', 0), up('Gb4', 0))
+check('移调保持音高', String(noteFrequency(parseNote(up('A4', 12)))), String(880))
 
 // ── 记忆派生 ────────────────────────────────────────────────────
 // 派生量不独立存储，因此「同样的 episodes 必然得到同样的画像」是必须保证的

@@ -19,6 +19,7 @@ import {
   createGetIntervalTool,
   createGetKeySignatureTool,
   createGetScaleTool,
+  createTransposeNoteTool,
 } from './tools/music-theory.js'
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -147,6 +148,21 @@ const playNotesParameters = {
   },
 } as const satisfies ParameterSchemaSpec
 
+const transposeParameters = {
+  note: {
+    type: 'string', required: true,
+    description: `起始${NOTE_HINT}必须带八度，如 C4、A3。`,
+  },
+  semitones: {
+    type: 'integer', required: true,
+    description: '移动的半音数，正数向上、负数向下。上行一个半音传 1，下行传 -1。',
+  },
+  preference: {
+    type: 'string', default: 'sharp', enum: ['sharp', 'flat'],
+    description: '拼写偏好：sharp 用升号（C#），flat 用降号（Db）。只影响写法，不影响音高。',
+  },
+} as const satisfies ParameterSchemaSpec
+
 const exerciseParameters = {
   type: {
     type: 'string', required: true,
@@ -208,6 +224,7 @@ export function apply(ctx: Context): void {
   const recordExerciseResult = createRecordExerciseResultTool()
   const recordTrackFeedback = createRecordTrackFeedbackTool()
   const getMemory = createGetMemoryTool()
+  const transposeNote = createTransposeNoteTool()
 
   /**
    * 概念接触自动记录。
@@ -322,6 +339,17 @@ export function apply(ctx: Context): void {
       }
       return materializeJson(result)
     },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: transposeNote.name,
+    description:
+      '按半音移调，只保证音高正确、不保证功能拼写。'
+      + '测试声乐音域时用它逐半音上行或下行，不要自行推算音名 —— '
+      + '跨八度边界（如 B4 上行到 C5）容易算错。',
+    parameters: transposeParameters,
+    output: { schema: { type: 'json' }, render: renderJson },
+    execute: async args => materializeJson(transposeNote.execute(args)),
   }))
 
   ctx.tools.register(defineTool({

@@ -469,8 +469,16 @@ stderr、退出码仍为 0**。
 
 这类缺陷是 smoke 存在的主要理由：它不属于类型错误，也不会在运行时抛异常。
 
-### 未验证
+### preset 工具裁剪（已验证）
 
-| 项 | 阻塞原因 |
+在 GUI **新建会话**中提问「现在几点了」——该问题只能由 Shell 工具回答——Agent 答称
+不具备读取系统时钟的能力。确认 `tool-bash` / `tool-pwsh` / `tool-fs` 等通用工具
+已不在其工具集内，而乐理、音频、记忆工具（注册于 host 全局层，经 scope 父链可见）
+仍然可用。
+
+验证此项必须满足两个条件，缺一不可：
+
+| 条件 | 原因 |
 |---|---|
-| preset 是否正确挂载、工具集是否真的裁剪 | CLI profile 走 `dsh-base + dsh-headless`，不经过 agent presets；须在 web GUI 中创建会话才能验证 |
+| 使用 GUI | CLI 走 `dsh-base + dsh-headless`，无 agent-presets 机制 |
+| **新建**会话 | preset 在会话创建时固化；关闭窗口重开只是恢复旧会话 |

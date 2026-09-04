@@ -127,6 +127,50 @@ export function parseNote(text: string): Note {
   return { letter, accidental: offset, octave: Number.parseInt(rawOctave, 10) }
 }
 
+/** 半音移调时的拼写偏好。 */
+export type SpellingPreference = 'sharp' | 'flat'
+
+/** 升号拼写下 0-11 半音对应的字母与变化音。 */
+const SHARP_SPELLING: readonly (readonly [Letter, Accidental])[] = [
+  ['C', 0], ['C', 1], ['D', 0], ['D', 1], ['E', 0], ['F', 0],
+  ['F', 1], ['G', 0], ['G', 1], ['A', 0], ['A', 1], ['B', 0],
+]
+
+const FLAT_SPELLING: readonly (readonly [Letter, Accidental])[] = [
+  ['C', 0], ['D', -1], ['D', 0], ['E', -1], ['E', 0], ['F', 0],
+  ['G', -1], ['G', 0], ['A', -1], ['A', 0], ['B', -1], ['B', 0],
+]
+
+/**
+ * 按半音数移调。
+ *
+ * 与 noteFromInterval 的区别：那个按「度数 + 性质」构造，保证功能拼写正确；
+ * 本函数只保证音高正确，拼写按偏好从固定表选取。适用于只关心音高的场景 ——
+ * 例如逐半音测试声乐音域，此时 C#4 与 Db4 没有功能差别。
+ *
+ * 要求带八度，因为移调必须能跨越八度边界。
+ */
+export function transposeBySemitones(
+  note: Note,
+  semitones: number,
+  preference: SpellingPreference = 'sharp',
+): Note {
+  const targetMidi = midiValue(note) + semitones
+  if (targetMidi < 0 || targetMidi > 127) {
+    throw new Error(`transposed note falls outside MIDI range: ${targetMidi}`)
+  }
+
+  const table = preference === 'sharp' ? SHARP_SPELLING : FLAT_SPELLING
+  const entry = table[mod(targetMidi, 12)]
+  if (entry === undefined) throw new Error(`unreachable spelling index for midi ${targetMidi}`)
+
+  const [letter, accidental] = entry
+  // 由 MIDI 值反推八度：C4 = 60，故八度 = floor(midi / 12) - 1。
+  // 用字母的自然音高而非目标音高计算，确保 B#/Cb 这类跨界拼写落在正确八度。
+  const octave = Math.floor((targetMidi - accidental) / 12) - 1
+  return { letter, accidental, octave }
+}
+
 /** 同音异名判断：音高相同但拼写不同，例如 F# 与 Gb。 */
 export function isEnharmonic(a: Note, b: Note): boolean {
   return pitchClass(a) === pitchClass(b)

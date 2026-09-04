@@ -17,7 +17,7 @@ import {
 } from '../theory/exercise.js'
 import { formatInterval, formatIntervalZh, intervalBetween } from '../theory/interval.js'
 import { getCircleOfFifths, getKeySignature } from '../theory/key.js'
-import { formatNote, formatNoteZh, parseNote } from '../theory/note.js'
+import { formatNote, formatNoteZh, parseNote, transposeBySemitones } from '../theory/note.js'
 import { buildScale } from '../theory/scale.js'
 import { resolveChordQuality, resolveKeyMode, resolveScaleMode } from '../theory/vocabulary.js'
 
@@ -188,6 +188,41 @@ export function createGetCircleOfFifthsTool(): TheoryTool<KeyQuery, Record<strin
         flatward: project(view.flatward),
         relative: project(view.relative),
         parallel: project(view.parallel),
+      }
+    },
+  }
+}
+
+export interface TransposeQuery {
+  note: string
+  semitones: number
+  preference?: string
+}
+
+export function createTransposeNoteTool(): TheoryTool<TransposeQuery, Record<string, unknown>> {
+  return {
+    name: 'transpose_note',
+    description: 'Shift a note by semitones, keeping pitch exact. Requires an octave.',
+    execute: ({ note, semitones, preference }) => {
+      const parsed = parseNote(note)
+      if (parsed.octave === undefined) {
+        throw new Error(`note must include an octave, e.g. C4 or A3, got: ${note}`)
+      }
+      if (!Number.isInteger(semitones)) {
+        throw new Error(`semitones must be an integer, got: ${semitones}`)
+      }
+      const spelling = preference ?? 'sharp'
+      if (spelling !== 'sharp' && spelling !== 'flat') {
+        throw new Error(`preference must be sharp or flat, got: ${preference}`)
+      }
+
+      const result = transposeBySemitones(parsed, semitones, spelling)
+      return {
+        from: formatNote(parsed),
+        to: formatNote(result),
+        toZh: formatNoteZh(result),
+        semitones,
+        preference: spelling,
       }
     },
   }
