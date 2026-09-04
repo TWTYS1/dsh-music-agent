@@ -35,6 +35,8 @@ export interface PlayNotesQuery {
   style?: string
   bpm?: number
   octave?: number
+  holdMs?: number
+  repeat?: number
 }
 
 export interface PlayTool<TInput, TOutput> {
@@ -47,7 +49,7 @@ export function createPlayNotesTool(): PlayTool<PlayNotesQuery, Record<string, u
   return {
     name: 'play_notes',
     description: 'Synthesize and play notes as a chord, a sequence, or both.',
-    execute: ({ notes, style, bpm, octave }) => {
+    execute: ({ notes, style, bpm, octave, holdMs, repeat }) => {
       if (notes.length === 0) throw new Error('notes must not be empty')
       if (notes.length > 16) throw new Error(`at most 16 notes, got ${notes.length}`)
 
@@ -71,21 +73,31 @@ export function createPlayNotesTool(): PlayTool<PlayNotesQuery, Record<string, u
       const parsed = assignOctaves(notes.map(parseNote), startOctave)
       const frequencies = parsed.map(noteFrequency)
 
+      const hold = holdMs ?? undefined
+      if (hold !== undefined && (!Number.isFinite(hold) || hold < 200 || hold > 6000)) {
+        throw new Error(`holdMs must be 200-6000, got ${hold}`)
+      }
+      const times = repeat ?? 1
+      if (!Number.isInteger(times) || times < 1 || times > 5) {
+        throw new Error(`repeat must be an integer 1-5, got ${times}`)
+      }
+
       // 依次奏响时每音占一拍；和弦统一用较长的时值以便听清性质。
+      // holdMs 显式给出时覆盖两者 —— 跟唱参考音需要远长于「听和弦性质」的时值。
       const beatMs = 60_000 / tempo
       const sequenceOptions: ToneOptions = {
         sampleRate: DEFAULT_SAMPLE_RATE,
-        durationMs: Math.min(beatMs * 0.9, 1200),
+        durationMs: hold ?? Math.min(beatMs * 0.9, 1200),
         amplitude: 0.8,
       }
       const chordOptions: ToneOptions = {
         sampleRate: DEFAULT_SAMPLE_RATE,
-        durationMs: 1600,
+        durationMs: hold ?? 1600,
         amplitude: 0.8,
       }
       const gapMs = beatMs * 0.1
 
-      let samples
+      let samples: Float32Array
       if (requestedStyle === 'chord') {
         samples = renderChord(frequencies, chordOptions)
       } else if (requestedStyle === 'sequence') {
@@ -99,9 +111,22 @@ export function createPlayNotesTool(): PlayTool<PlayNotesQuery, Record<string, u
         )
       }
 
+      // 重复整段而非单音：跟唱时听两遍同样的音才有把握，
+      // 而把重复做在音频里比让模型多次调用工具更省一轮往返。
+      if (times > 1) {
+        let combined = samples
+        for (let index = 1; index < times; index += 1) {
+          combined = concatWithGap(combined, samples, DEFAULT_SAMPLE_RATE, 600)
+        }
+        samples = combined
+      }
+
       const wav = encodeWav(samples, DEFAULT_SAMPLE_RATE)
       const spelled = parsed.map(formatNote)
-      const playback = playWav(wav, `${spelled.join(',')}|${requestedStyle}|${tempo}`)
+      const playback = playWav(
+        wav,
+        `${spelled.join(',')}|${requestedStyle}|${tempo}|${hold ?? 'auto'}|${times}`,
+      )
 
       return {
         played: playback.started,
@@ -111,6 +136,8 @@ export function createPlayNotesTool(): PlayTool<PlayNotesQuery, Record<string, u
         frequencies: frequencies.map(value => Math.round(value * 100) / 100),
         durationMs: Math.round(samples.length / DEFAULT_SAMPLE_RATE * 1000),
         bpm: tempo,
+        repeat: times,
+        ...(hold === undefined ? {} : { holdMs: hold }),
         cached: playback.cached,
         player: playback.player,
         ...(playback.started ? {} : { warning: '未找到可用的系统播放器，音频文件已生成但未播放。' }),

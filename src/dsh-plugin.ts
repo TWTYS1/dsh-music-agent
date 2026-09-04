@@ -146,6 +146,17 @@ const playNotesParameters = {
     type: 'integer', default: 4,
     description: '起始八度，范围 1 到 7，默认 4（C4 为中央 C）。',
   },
+  holdMs: {
+    type: 'integer',
+    description: '每个音的持续毫秒数，范围 200 到 6000。缺省时按奏法自动决定（约 0.5 到 1.6 秒）。'
+      + '需要用户跟着唱时必须显式加长，建议 2500 —— 默认时值是为听辨和弦性质设计的，'
+      + '不足以让人听清、吸气再唱出来。',
+  },
+  repeat: {
+    type: 'integer', default: 1,
+    description: '整段重复次数，范围 1 到 5，段间留 0.6 秒间隔。'
+      + '让用户跟唱或辨认时建议传 2，听两遍才有把握。',
+  },
 } as const satisfies ParameterSchemaSpec
 
 const transposeParameters = {
@@ -322,7 +333,10 @@ export function apply(ctx: Context): void {
       + '音阶色彩、音程距离时应调用本工具 —— 和弦的听觉特征（例如减七和弦四音等距的悬浮感）'
       + '无法用文字说清。'
       + '音名可先用 get_scale 或 get_chord 取得，再传入本工具。'
-      + '用于听辨练习时，播放后不要透露音名，等用户作答。',
+      + '用于听辨练习时，播放后不要透露音名，等用户作答。'
+      + '需要用户跟着唱（例如测音域）时，传 holdMs 2500 与 repeat 2 加长并重复 —— '
+      + '默认时值只够听辨，不够听清后吸气再唱。'
+      + '用户说没听清或想再听一遍时，用相同参数重新调用即可，音频有缓存不会重新合成。',
     parameters: playNotesParameters,
     output: { schema: { type: 'json' }, render: renderJson },
     execute: async args => {
