@@ -21,6 +21,7 @@ import {
   createGetScaleTool,
   createTransposeNoteTool,
 } from './tools/music-theory.js'
+import { createVocalRangeStepTool } from './tools/vocal.js'
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 const materializeJson = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue
@@ -174,6 +175,31 @@ const transposeParameters = {
   },
 } as const satisfies ParameterSchemaSpec
 
+const vocalRangeStepParameters = {
+  startNote: {
+    type: 'string', required: true,
+    description: '测试起点音，必须带八度。男声建议 C3，女声建议 C4。',
+  },
+  direction: {
+    type: 'string', required: true, enum: ['up', 'down'],
+    description: 'up 向上测最高音，down 向下测最低音。先测完一个方向再测另一个。',
+  },
+  tested: {
+    type: 'array',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        note: { type: 'string' },
+        verdict: { type: 'string' },
+      },
+    },
+    description: '本方向已测过的音与用户反馈，按测试顺序排列。'
+      + 'verdict 接受 comfortable/舒服、strained/勉强、unreachable/唱不上去。'
+      + '首次调用传空数组或省略。每轮把新结果追加进来再调用。',
+  },
+} as const satisfies ParameterSchemaSpec
+
 const exerciseParameters = {
   type: {
     type: 'string', required: true,
@@ -236,6 +262,7 @@ export function apply(ctx: Context): void {
   const recordTrackFeedback = createRecordTrackFeedbackTool()
   const getMemory = createGetMemoryTool()
   const transposeNote = createTransposeNoteTool()
+  const vocalRangeStep = createVocalRangeStepTool()
 
   /**
    * 概念接触自动记录。
@@ -364,6 +391,21 @@ export function apply(ctx: Context): void {
     parameters: transposeParameters,
     output: { schema: { type: 'json' }, render: renderJson },
     execute: async args => materializeJson(transposeNote.execute(args)),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: vocalRangeStep.name,
+    description:
+      '推进声乐音域测试：返回下一个该播放的音、当前阶段与进度说明。'
+      + '测音域时必须用本工具决定下一个音，不要自行推算 —— 它内置两阶段策略'
+      + '（先全音粗测逼近边界，越界后退回半音精测），一个八度约 6 到 8 轮即可完成，'
+      + '而逐半音要 12 轮，会让嗓子疲劳。'
+      + '每轮把用户的反馈追加进 tested 后重新调用。'
+      + '返回的 progressZh 要原样告知用户，让他知道测到第几个音、当前边界在哪。'
+      + 'done 为 true 时用 limitNote 与 comfortableNote 调用 remember_profile 保存。',
+    parameters: vocalRangeStepParameters,
+    output: { schema: { type: 'json' }, render: renderJson },
+    execute: async args => materializeJson(vocalRangeStep.execute(args)),
   }))
 
   ctx.tools.register(defineTool({

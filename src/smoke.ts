@@ -16,6 +16,11 @@ import { encodeWav, readWavHeader } from './audio/wav.js'
 import { deriveMemory } from './memory/derive.js'
 import { renderMemory } from './memory/render.js'
 import { EMPTY_PROFILE, type Episode, type MusicProfile } from './memory/types.js'
+import {
+  type TestedNote,
+  nextRangeStep,
+  resolveVerdict,
+} from './vocal/range-test.js'
 import { buildChord } from './theory/chord.js'
 import {
   type Difficulty,
@@ -271,6 +276,93 @@ check('F5 下行五半音', up('F5', -5), 'C5')
 // 等音输入应得到同一音高，拼写按偏好归一。
 check('F#4 与 Gb4 移调后同高', up('F#4', 0), up('Gb4', 0))
 check('移调保持音高', String(noteFrequency(parseNote(up('A4', 12)))), String(880))
+
+// ── 声乐音域测试流程 ────────────────────────────────────────────
+// 流程放进代码而非 persona，正是为了能在这里验证：轮次、阶段切换、
+// 边界收敛都必须确定。模型只负责播放与提问。
+
+function step(start: string, direction: 'up' | 'down', tested: readonly TestedNote[]) {
+  return nextRangeStep(start, direction, tested)
+}
+
+// 首轮返回起点本身
+const first = step('C4', 'up', [])
+check('首轮测起点', first.nextNote ?? '', 'C4')
+check('首轮为粗测', first.phase, 'coarse')
+check('首轮未完成', String(first.done), 'false')
+check('首轮轮次', String(first.round), '1')
+
+// 粗测阶段按全音步进，比逐半音省一半轮次
+const coarse = step('C4', 'up', [{ note: 'C4', verdict: 'comfortable' }])
+check('粗测全音步进', coarse.nextNote ?? '', 'D4')
+check('粗测步长', String(coarse.nextStepSemitones), '2')
+
+const coarse2 = step('C4', 'up', [
+  { note: 'C4', verdict: 'comfortable' },
+  { note: 'D4', verdict: 'comfortable' },
+])
+check('粗测继续上行', coarse2.nextNote ?? '', 'E4')
+
+// 勉强也算可达，继续推进
+const strained = step('C4', 'up', [
+  { note: 'C4', verdict: 'comfortable' },
+  { note: 'D4', verdict: 'strained' },
+])
+check('勉强仍继续', strained.nextNote ?? '', 'E4')
+
+// 越界后退回半音精测
+const fine = step('C4', 'up', [
+  { note: 'C4', verdict: 'comfortable' },
+  { note: 'D4', verdict: 'comfortable' },
+  { note: 'E4', verdict: 'unreachable' },
+])
+check('越界转精测', fine.phase, 'fine')
+check('精测退回半音', fine.nextNote ?? '', 'D#4')
+check('精测步长', String(fine.nextStepSemitones), '1')
+
+// 半音间隙收窄后完成，并区分极限与舒适边界
+const finished = step('C4', 'up', [
+  { note: 'C4', verdict: 'comfortable' },
+  { note: 'D4', verdict: 'comfortable' },
+  { note: 'E4', verdict: 'unreachable' },
+  { note: 'D#4', verdict: 'strained' },
+])
+check('收敛后完成', String(finished.done), 'true')
+check('极限音为勉强可达', finished.limitNote ?? '', 'D#4')
+check('舒适边界为最远舒服音', finished.comfortableNote ?? '', 'D4')
+
+// 向下测：步进与边界取向相反
+const down = step('C4', 'down', [{ note: 'C4', verdict: 'comfortable' }])
+check('向下粗测', down.nextNote ?? '', 'A#3')
+const downFine = step('C4', 'down', [
+  { note: 'C4', verdict: 'comfortable' },
+  { note: 'A#3', verdict: 'comfortable' },
+  { note: 'G#3', verdict: 'unreachable' },
+])
+check('向下转精测', downFine.nextNote ?? '', 'A3')
+const downDone = step('C4', 'down', [
+  { note: 'C4', verdict: 'comfortable' },
+  { note: 'A#3', verdict: 'comfortable' },
+  { note: 'G#3', verdict: 'unreachable' },
+  { note: 'A3', verdict: 'unreachable' },
+])
+check('向下完成', String(downDone.done), 'true')
+check('向下极限', downDone.limitNote ?? '', 'A#3')
+
+// 起点即唱不出：必须终止并提示换起点，不能无限往下试
+const badStart = step('C4', 'up', [{ note: 'C4', verdict: 'unreachable' }])
+check('起点不可达即终止', String(badStart.done), 'true')
+check('提示更换起点', String(badStart.progressZh.includes('起点')), 'true')
+
+// 进度描述必须非空，它是用户判断「测到第几个」的唯一依据
+check('进度描述非空', String(first.progressZh.length > 0 && coarse.progressZh.length > 0), 'true')
+check('进度含轮次', String(coarse.progressZh.includes('第 2 个音')), 'true')
+
+// 中文反馈需被接受，否则用户必须说英文标识
+check('接受中文舒服', resolveVerdict('舒服'), 'comfortable')
+check('接受中文勉强', resolveVerdict('勉强'), 'strained')
+check('接受中文唱不上去', resolveVerdict('唱不上去'), 'unreachable')
+check('接受英文标识', resolveVerdict('comfortable'), 'comfortable')
 
 // ── 记忆派生 ────────────────────────────────────────────────────
 // 派生量不独立存储，因此「同样的 episodes 必然得到同样的画像」是必须保证的
